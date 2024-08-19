@@ -92,6 +92,7 @@ def add_client(client_id):
     models[client_id] = dict()  # dict()
     models[client_id][PLAIN] = set()
     models[client_id][ENCRYPTED] = set()
+    active[client_id] = dict()
     os.makedirs(f"{STORAGE_URL}/{client_id}/{PLAIN}")
     os.makedirs(f"{STORAGE_URL}/{client_id}/{ENCRYPTED}")
     with open(f'{STORAGE_URL}/{client_id}.bin', 'wb') as file:
@@ -176,6 +177,8 @@ def train_encrypted_continue(client_id, model_id):
     with open(f'{STORAGE_URL}/{client_id}/{ENCRYPTED}/{model_id}.bin', 'wb') as file:
         pickle.dump((model.weight.serialize(), model.bias.serialize()), file)
 
+    active[client_id].pop(model_id)
+
     return jsonify({"message": "Training fully completed", "model": model_id}), 200
 
 
@@ -239,7 +242,16 @@ def eval_encrypted(client_id, model_id):
         ctx_data = pickle.load(ctx_file)
         context = ts.context_from(ctx_data)
     enc_x_eval = [ts.ckks_tensor_from(context, e.encode("iso-8859-1")) for e in enc_x_eval]
-    model = models[client_id][model_id]
+    folder = ENCRYPTED if model_id in models[client_id][ENCRYPTED] else PLAIN
+    with open(f"{STORAGE_URL}/{client_id}/{folder}/{model_id}.bin", 'rb') as model_file:
+        loaded_weight, loaded_bias = pickle.load(model_file)
+        if folder == ENCRYPTED:
+            loaded_weight = ts.ckks_tensor_from(context, loaded_weight)
+            loaded_bias = ts.ckks_tensor_from(context, loaded_bias)
+            model = EncryptedLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
+        else:
+            model = PlainLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
+
     predictions = model.predict(enc_x_eval)
     json_response = {
         "message": "Evaluation completed",
@@ -261,14 +273,24 @@ def eval_plain(client_id, model_id):
         return jsonify(
             {"error": "Send all required json data: x_eval"}), 400
     x_eval = torch.tensor(x_eval, dtype=torch.float64)
-    # TODO: this
+
     folder = ENCRYPTED if model_id in models[client_id][ENCRYPTED] else PLAIN
-    model = models[client_id][model_id]
-    if isinstance(model, EncryptedLogisticRegression):
-        with open(f"{STORAGE_URL}/{client_id}.bin", 'rb') as ctx_file:
-            ctx_data = pickle.load(ctx_file)
-            context = ts.context_from(ctx_data)
+    with open(f"{STORAGE_URL}/{client_id}.bin", 'rb') as ctx_file:
+        ctx_data = pickle.load(ctx_file)
+        context = ts.context_from(ctx_data)
+
+    if folder == ENCRYPTED:
         x_eval = [ts.ckks_tensor(context, x) for x in x_eval]
+
+    with open(f"{STORAGE_URL}/{client_id}/{folder}/{model_id}.bin", 'rb') as model_file:
+        loaded_weight, loaded_bias = pickle.load(model_file)
+        if folder == ENCRYPTED:
+            loaded_weight = ts.ckks_tensor_from(context, loaded_weight)
+            loaded_bias = ts.ckks_tensor_from(context, loaded_bias)
+            model = EncryptedLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
+        else:
+            model = PlainLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
+
     predictions = model.predict(x_eval)
     if isinstance(model, EncryptedLogisticRegression):
         predictions = [p.serialize().decode("iso-8859-1") for p in predictions]

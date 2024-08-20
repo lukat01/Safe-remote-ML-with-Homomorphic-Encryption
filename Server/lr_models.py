@@ -4,6 +4,7 @@ import tenseal as ts
 import torch
 
 coefficients = [0.5, 0.197, 0, -0.004]
+default_float = torch.float
 
 
 class AbstractLogisticRegression(ABC):
@@ -16,8 +17,8 @@ class AbstractLogisticRegression(ABC):
         self.iterations = iterations
         if weight is None and bias is None:
             lr = torch.nn.Linear(self.num_features, 1)
-            self.weight = torch.tensor(lr.weight.data.tolist()[0], dtype=torch.float64)
-            self.bias = torch.tensor(lr.bias.data.tolist(), dtype=torch.float64)
+            self.weight = torch.tensor(lr.weight.data.tolist()[0], dtype=default_float)
+            self.bias = torch.tensor(lr.bias.data.tolist(), dtype=default_float)
         else:
             self.weight = weight
             self.bias = bias
@@ -68,8 +69,8 @@ class PlainLogisticRegression(AbstractLogisticRegression):
                  weight=None, bias=None):
         super().__init__(context, x_train, y_train, num_features, iterations, weight, bias)
         if self.weight is not None and self.bias is not None:
-            self.enc_weight = ts.ckks_tensor(self.ctx, self.weight)
-            self.enc_bias = ts.ckks_tensor(self.ctx, self.bias)
+            self.enc_weight = ts.ckks_vector(self.ctx, self.weight)
+            self.enc_bias = ts.ckks_vector(self.ctx, self.bias)
         else:
             self.enc_weight = None
             self.enc_bias = None
@@ -80,13 +81,13 @@ class PlainLogisticRegression(AbstractLogisticRegression):
                 out = self.forward(x)
                 self.backward(x, out, y)
             self.update_parameters()
-        self.enc_weight = ts.ckks_tensor(self.ctx, self.weight)
-        self.enc_bias = ts.ckks_tensor(self.ctx, self.bias)
+        self.enc_weight = ts.ckks_vector(self.ctx, self.weight)
+        self.enc_bias = ts.ckks_vector(self.ctx, self.bias)
 
     def forward(self, x):
-        if isinstance(x, ts.CKKSTensor):
+        if isinstance(x, ts.CKKSVector):
             out = x.dot(self.enc_weight)
-            out = out.reshape([1])
+            # out = out.reshape([1])
             out = out + self.enc_bias
             out = self.sigmoid(out)
         else:
@@ -97,11 +98,11 @@ class PlainLogisticRegression(AbstractLogisticRegression):
 
     @staticmethod
     def sigmoid(x):
-        if isinstance(x, ts.CKKSTensor):
+        if isinstance(x, ts.CKKSVector):
             out = AbstractLogisticRegression.sigmoid(x)
         else:
-            coefficients_tensor = torch.tensor(coefficients, dtype=torch.float64)
-            powers = torch.arange(len(coefficients_tensor), dtype=torch.float64).unsqueeze(0)
+            coefficients_tensor = torch.tensor(coefficients, dtype=default_float)
+            powers = torch.arange(len(coefficients_tensor), dtype=default_float).unsqueeze(0)
             x_powers = x ** powers
             out = (coefficients_tensor.unsqueeze(0) * x_powers).sum(dim=-1)
         return out
@@ -113,33 +114,33 @@ class EncryptedLogisticRegression(AbstractLogisticRegression):
                  weight=None, bias=None):
         super().__init__(context, x_train, y_train, num_features, iterations, weight, bias)
         if self.weight is None and self.bias is None:
-            self.weight = ts.ckks_tensor(self.ctx, self.weight)
-            self.bias = ts.ckks_tensor(self.ctx, self.bias)
+            self.weight = ts.ckks_vector(self.ctx, self.weight)
+            self.bias = ts.ckks_vector(self.ctx, self.bias)
         self.current_iteration = 0
-        self._delta_w = ts.ckks_tensor(self.ctx, [0])
-        self._delta_b = ts.ckks_tensor(self.ctx, [0])
+        self._delta_w = ts.ckks_vector(self.ctx, [0])
+        self._delta_b = ts.ckks_vector(self.ctx, [0])
 
     def set(self, x, y):
         self.x_train = x
         self.y_train = y
-        self.weight = ts.ckks_tensor(self.ctx, self.weight)
-        self.bias = ts.ckks_tensor(self.ctx, self.bias)
+        self.weight = ts.ckks_vector(self.ctx, self.weight)
+        self.bias = ts.ckks_vector(self.ctx, self.bias)
 
     def reset(self, weight, bias):
         self.weight = weight
         self.bias = bias
 
-    def forward(self, enc_x: ts.CKKSTensor):
+    def forward(self, enc_x: ts.CKKSVector):
         enc_out = enc_x.dot(self.weight)
-        enc_out = enc_out.reshape([1])
+        # enc_out = enc_out.reshape([1])
         enc_out += self.bias
         enc_out = self.sigmoid(enc_out)
         return enc_out
 
     def update_parameters(self):
         super().update_parameters()
-        self._delta_w = ts.ckks_tensor(self.ctx, [0])
-        self._delta_b = ts.ckks_tensor(self.ctx, [0])
+        self._delta_w = ts.ckks_vector(self.ctx, [0])
+        self._delta_b = ts.ckks_vector(self.ctx, [0])
 
     def train(self):
         for enc_x, enc_y in zip(self.x_train, self.y_train):

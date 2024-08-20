@@ -119,48 +119,54 @@ def train_encrypted(client_id, model_id):
                 return jsonify({"error": "Model already exists"}), 409
         if not double:
             models[client_id][ENCRYPTED].add(model_id)
+    try:
+        print("Reading received data")
+        start_time = time()
+        enc_x_train = request.json["x_train"]
+        print("X data read")
+        enc_y_train = request.json["y_train"]
+        print("Y data read")
+        num_features = request.json["num_features"]
+        iterations = request.json["iterations"]
+        end_time = time()
+        print(f"Data loaded in {end_time - start_time} seconds")
 
-    print("Reading received data")
-    start_time = time()
-    enc_x_train = request.json["x_train"]
-    print("X data read")
-    enc_y_train = request.json["y_train"]
-    print("Y data read")
-    num_features = request.json["num_features"]
-    iterations = request.json["iterations"]
-    end_time = time()
-    print(f"Data loaded in {end_time - start_time} seconds")
+        if enc_x_train is None or enc_y_train is None or num_features is None or iterations is None:
+            return jsonify(
+                {"error": "Send all required json data: iterations, num_features, enc_x_train, enc_y_train"}), 400
 
-    if enc_x_train is None or enc_y_train is None or num_features is None or iterations is None:
-        return jsonify(
-            {"error": "Send all required json data: iterations, num_features, enc_x_train, enc_y_train"}), 400
+        with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
+            ctx_data = pickle.load(ctx_file)
+            context = ts.context_from(ctx_data)
+            del ctx_data
+            gc.collect()
 
-    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
-        ctx_data = pickle.load(ctx_file)
-        context = ts.context_from(ctx_data)
-        del ctx_data
+        print("Raw data conversion")
+        enc_x_train = [ts.ckks_vector_from(context, e.encode("iso-8859-1")) for e in enc_x_train]
+        enc_y_train = [ts.ckks_vector_from(context, e.encode("iso-8859-1")) for e in enc_y_train]
+        print("Raw data converted to CKKS vectors")
+
+        if double:
+            model = active[client_id][model_id]
+            model.set(enc_x_train, enc_y_train)
+        else:
+            model = EncryptedLogisticRegression(context, enc_x_train, enc_y_train, num_features, iterations)
+            active[client_id][model_id] = model
+
+        completed, weight, bias = model.train()
+
+        del request.json["x_train"]
+        del request.json["y_train"]
         gc.collect()
 
-    print("Raw data conversion")
-    enc_x_train = [ts.ckks_tensor_from(context, e.encode("iso-8859-1")) for e in enc_x_train]
-    enc_y_train = [ts.ckks_tensor_from(context, e.encode("iso-8859-1")) for e in enc_y_train]
-    print("Raw data converted to CKKS tensors")
+        return model_train_process_response(completed, weight, bias, model_id, True)
+    except Exception as e:
+        if client_id in models and ENCRYPTED in models[client_id] and model_id in models[client_id][ENCRYPTED]:
+            models[client_id][ENCRYPTED].remove(model_id)
+        if client_id in active and model_id in active[client_id]:
+            active[client_id].pop(model_id)
 
-    if double:
-        model = active[client_id][model_id]
-        model.set(enc_x_train, enc_y_train)
-    else:
-        model = EncryptedLogisticRegression(context, enc_x_train, enc_y_train, num_features, iterations)
-        active[client_id][model_id] = model
-
-    completed, weight, bias = model.train()
-
-    del request.json["x_train"]
-    del request.json["y_train"]
-
-    gc.collect()
-
-    return model_train_process_response(completed, weight, bias, model_id, True)
+        return jsonify({"error": str(e)}), 500
 
 
 @application.route("/train_encrypted_continue/<client_id>/<model_id>", methods=["POST"])
@@ -169,35 +175,45 @@ def train_encrypted_continue(client_id, model_id):
     if client_id is None or model_id is None:
         return jsonify({"error": "Send all required data: client ID, model ID"}), 400
 
-    weight = request.json["weight"]
-    bias = request.json["bias"]
-    finalization = request.json["finalization"]
+    try:
+        weight = request.json["weight"]
+        bias = request.json["bias"]
+        finalization = request.json["finalization"]
 
-    if weight is None or bias is None or finalization is None:
-        return jsonify({"error": "Send all required json data: weight, bias, completed"}), 400
+        if weight is None or bias is None or finalization is None:
+            return jsonify({"error": "Send all required json data: weight, bias, completed"}), 400
 
-    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
-        ctx_data = pickle.load(ctx_file)
-        context = ts.context_from(ctx_data)
-        del ctx_data
-        gc.collect()
+        with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
+            ctx_data = pickle.load(ctx_file)
+            context = ts.context_from(ctx_data)
+            del ctx_data
+            gc.collect()
 
-    model = active[client_id][model_id]
+        model = active[client_id][model_id]
 
-    weight = ts.ckks_tensor_from(context, weight.encode("iso-8859-1"))
-    bias = ts.ckks_tensor_from(context, bias.encode("iso-8859-1"))
-    model.reset(weight, bias)
+        weight = ts.ckks_vector_from(context, weight.encode("iso-8859-1"))
+        bias = ts.ckks_vector_from(context, bias.encode("iso-8859-1"))
+        model.reset(weight, bias)
 
-    if not finalization:
-        completed, weight, bias = model.train()
-        return model_train_process_response(completed, weight, bias)
+        if not finalization:
+            completed, weight, bias = model.train()
+            return model_train_process_response(completed, weight, bias)
 
-    with open(f'{STORAGE_URL}/{client_id}/{ENCRYPTED}/{model_id}.bin', 'wb') as file:
-        pickle.dump((model.weight.serialize(), model.bias.serialize()), file)
+        with open(f'{STORAGE_URL}/{client_id}/{ENCRYPTED}/{model_id}.bin', 'wb') as file:
+            pickle.dump((model.weight.serialize(), model.bias.serialize()), file)
 
-    active[client_id].pop(model_id, None)
+        active[client_id].pop(model_id, None)
 
-    return jsonify({"message": "Training fully completed", "model": model_id}), 200
+        return jsonify({"message": "Training fully completed", "model": model_id}), 200
+    except Exception as e:
+        if client_id in models and ENCRYPTED in models[client_id] and model_id in models[client_id][ENCRYPTED]:
+            models[client_id][ENCRYPTED].remove(model_id)
+        if client_id in active and model_id in active[client_id]:
+            active[client_id].pop(model_id)
+        model_path = f"{STORAGE_URL}/{client_id}/{ENCRYPTED}/{model_id}.bin"
+        if os.path.exists(model_path):
+            os.remove(model_path)
+        return jsonify({"error": str(e)}), 500
 
 
 @application.route("/train_plain/<client_id>/<model_id>", methods=["POST"])
@@ -209,44 +225,59 @@ def train_plain(client_id, model_id):
 
     double = request.json["double"]
 
-    with lock:
-        if model_id in models[client_id][PLAIN] or model_id in models[client_id][ENCRYPTED]:
-            return jsonify({"error": "Model already exists"}), 409
-        models[client_id][PLAIN].add(model_id)
+    try:
+        with lock:
+            if model_id in models[client_id][PLAIN] or model_id in models[client_id][ENCRYPTED]:
+                return jsonify({"error": "Model already exists"}), 409
+            models[client_id][PLAIN].add(model_id)
+            if double:
+                enc_index = model_id.find(f"_{PLAIN}")
+                model_id_enc = model_id[:enc_index]
+                models[client_id][ENCRYPTED].add(model_id_enc)
+
+        x_train = torch.tensor(request.json["x_train"], dtype=default_float)
+        y_train = torch.tensor(request.json["y_train"], dtype=default_float)
+        num_features = request.json["num_features"]
+        iterations = request.json["iterations"]
+
+        if x_train is None or y_train is None or num_features is None or iterations is None:
+            return jsonify(
+                {"error": "Send all required json data: iterations, num_features, enc_x_train, enc_y_train"}), 400
+
+        with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
+            ctx_data = pickle.load(ctx_file)
+            context = ts.context_from(ctx_data)
+            del ctx_data
+            gc.collect()
+
+        model = PlainLogisticRegression(context, x_train, y_train, num_features, iterations)
+
         if double:
-            enc_index = model_id.find(f"_{PLAIN}")
-            model_id_enc = model_id[:enc_index]
-            models[client_id][ENCRYPTED].add(model_id_enc)
+            w, b = model.weight.clone(), model.bias.clone()
+            model_enc = EncryptedLogisticRegression(context, num_features=num_features,
+                                                    iterations=iterations, bias=b, weight=w)
+            active[client_id][model_id_enc] = model_enc
 
-    x_train = torch.tensor(request.json["x_train"], dtype=torch.float64)
-    y_train = torch.tensor(request.json["y_train"], dtype=torch.float64)
-    num_features = request.json["num_features"]
-    iterations = request.json["iterations"]
+        model.train()
 
-    if x_train is None or y_train is None or num_features is None or iterations is None:
-        return jsonify(
-            {"error": "Send all required json data: iterations, num_features, enc_x_train, enc_y_train"}), 400
+        with open(f'{STORAGE_URL}/{client_id}/{PLAIN}/{model_id}.bin', 'wb') as file:
+            pickle.dump((model.weight, model.bias), file)
 
-    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
-        ctx_data = pickle.load(ctx_file)
-        context = ts.context_from(ctx_data)
-        del ctx_data
-        gc.collect()
+        return jsonify({"message": "Training fully completed", "model": model_id}), 200
+    except Exception as e:
+        if client_id in models and PLAIN in models[client_id] and model_id in models[client_id][PLAIN]:
+            models[client_id][PLAIN].remove(model_id)
+        model_path = f"{STORAGE_URL}/{client_id}/{PLAIN}/{model_id}.bin"
+        if os.path.exists(model_path):
+            os.remove(model_path)
+        if double:
+            if (client_id in models and ENCRYPTED in models[client_id] and
+                    model_id_enc in models[client_id][ENCRYPTED]):
+                models[client_id][ENCRYPTED].remove(model_id_enc)
+            if client_id in active and model_id_enc in active[client_id]:
+                active[client_id].pop(model_id_enc)
 
-    model = PlainLogisticRegression(context, x_train, y_train, num_features, iterations)
-
-    if double:
-        w, b = model.weight.clone(), model.bias.clone()
-        model_enc = EncryptedLogisticRegression(context, num_features=num_features,
-                                                iterations=iterations, bias=b, weight=w)
-        active[client_id][model_id_enc] = model_enc
-
-    model.train()
-
-    with open(f'{STORAGE_URL}/{client_id}/{PLAIN}/{model_id}.bin', 'wb') as file:
-        pickle.dump((model.weight, model.bias), file)
-
-    return jsonify({"message": "Training fully completed", "model": model_id}), 200
+        return jsonify({"error": str(e)}), 500
 
 
 @application.route("/eval_encrypted/<client_id>/<model_id>", methods=["POST"])
@@ -270,13 +301,13 @@ def eval_encrypted(client_id, model_id):
         del ctx_data
         gc.collect()
 
-    enc_x_eval = [ts.ckks_tensor_from(context, e.encode("iso-8859-1")) for e in enc_x_eval]
+    enc_x_eval = [ts.ckks_vector_from(context, e.encode("iso-8859-1")) for e in enc_x_eval]
     folder = ENCRYPTED if model_id in models[client_id][ENCRYPTED] else PLAIN
     with open(f"{STORAGE_URL}/{client_id}/{folder}/{model_id}.bin", 'rb') as model_file:
         loaded_weight, loaded_bias = pickle.load(model_file)
         if folder == ENCRYPTED:
-            loaded_weight = ts.ckks_tensor_from(context, loaded_weight)
-            loaded_bias = ts.ckks_tensor_from(context, loaded_bias)
+            loaded_weight = ts.ckks_vector_from(context, loaded_weight)
+            loaded_bias = ts.ckks_vector_from(context, loaded_bias)
             model = EncryptedLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
         else:
             model = PlainLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
@@ -301,7 +332,7 @@ def eval_plain(client_id, model_id):
     if x_eval is None:
         return jsonify(
             {"error": "Send all required json data: x_eval"}), 400
-    x_eval = torch.tensor(x_eval, dtype=torch.float64)
+    x_eval = torch.tensor(x_eval, dtype=default_float)
 
     folder = ENCRYPTED if model_id in models[client_id][ENCRYPTED] else PLAIN
     with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
@@ -311,13 +342,13 @@ def eval_plain(client_id, model_id):
         gc.collect()
 
     if folder == ENCRYPTED:
-        x_eval = [ts.ckks_tensor(context, x) for x in x_eval]
+        x_eval = [ts.ckks_vector(context, x) for x in x_eval]
 
     with open(f"{STORAGE_URL}/{client_id}/{folder}/{model_id}.bin", 'rb') as model_file:
         loaded_weight, loaded_bias = pickle.load(model_file)
         if folder == ENCRYPTED:
-            loaded_weight = ts.ckks_tensor_from(context, loaded_weight)
-            loaded_bias = ts.ckks_tensor_from(context, loaded_bias)
+            loaded_weight = ts.ckks_vector_from(context, loaded_weight)
+            loaded_bias = ts.ckks_vector_from(context, loaded_bias)
             model = EncryptedLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
         else:
             model = PlainLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)

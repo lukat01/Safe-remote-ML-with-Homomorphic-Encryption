@@ -10,6 +10,8 @@ import requests
 
 url = "http://127.0.0.1:5000"
 CLIENTS_STORAGE = "Client/clients"
+default_float = torch.float64
+# it changes the accuracy slightly, but it remains consistent for different modes
 
 
 class Operation(Enum):
@@ -73,9 +75,9 @@ def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # 
     if encrypted:
         print(f"Encrypting data for {operation_str}")
         start_time = time()
-        x_data = [ts.ckks_tensor(ctx, x).serialize().decode("iso-8859-1") for x in x_data]
+        x_data = [ts.ckks_vector(ctx, x).serialize().decode("iso-8859-1") for x in x_data]
         if operation == Operation.TRAIN:
-            y_data = [ts.ckks_tensor(ctx, y).serialize().decode("iso-8859-1") for y in y_data]
+            y_data = [ts.ckks_vector(ctx, y).serialize().decode("iso-8859-1") for y in y_data]
         end_time = time()
         print(f"Encryption of the {operation_str} set took {end_time - start_time:.4f} seconds")
     else:
@@ -104,12 +106,12 @@ def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # 
     while (op_response.status_code == 202 or finalization) and operation == Operation.TRAIN and encrypted:
         response_dict = json.loads(op_response.content.decode("iso-8859-1"))
         single = response_dict["single"]
-        weight = ts.ckks_tensor_from(ctx, response_dict["weight"].encode("iso-8859-1"))
+        weight = ts.ckks_vector_from(ctx, response_dict["weight"].encode("iso-8859-1"))
         weight = weight.decrypt()
-        weight = ts.ckks_tensor(ctx, weight)
-        bias = ts.ckks_tensor_from(ctx, response_dict["bias"].encode("iso-8859-1"))
+        weight = ts.ckks_vector(ctx, weight)
+        bias = ts.ckks_vector_from(ctx, response_dict["bias"].encode("iso-8859-1"))
         bias = bias.decrypt()
-        bias = ts.ckks_tensor(ctx, bias)
+        bias = ts.ckks_vector(ctx, bias)
         json_request = {
             "bias": bias.serialize().decode("iso-8859-1"),
             "weight": weight.serialize().decode("iso-8859-1"),
@@ -134,20 +136,20 @@ def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # 
         return response_dict["model"]
     elif operation == Operation.EVAL and encrypted:
         response_dict = json.loads(op_response.content.decode("iso-8859-1"))
-        predictions_encrypted = [ts.ckks_tensor_from(ctx, p.encode("iso-8859-1"))
+        predictions_encrypted = [ts.ckks_vector_from(ctx, p.encode("iso-8859-1"))
                                  for p in response_dict["predictions"]]
-        predictions_decrypted = [p.decrypt().tolist() for p in predictions_encrypted]
-        return torch.tensor(predictions_decrypted, dtype=torch.float64)
+        predictions_decrypted = [p.decrypt() for p in predictions_encrypted]
+        return torch.tensor(predictions_decrypted, dtype=default_float)
     else:
         response_dict = json.loads(op_response.content)
         predictions = response_dict["predictions"]
         encrypted_prediction = response_dict["encrypted_prediction"]
         if encrypted_prediction:
-            predictions = [ts.ckks_tensor_from(ctx, p.encode("iso-8859-1")) for p in predictions]
+            predictions = [ts.ckks_vector_from(ctx, p.encode("iso-8859-1")) for p in predictions]
             predictions = [p.decrypt() for p in predictions]
         else:
             predictions = [[p] for p in predictions]
-        return torch.tensor(predictions, dtype=torch.float64)
+        return torch.tensor(predictions, dtype=default_float)
 
 
 def training(client, model, ctx, x_data, y_data, num_features, iterations, encrypted=True, double=False):

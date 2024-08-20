@@ -2,6 +2,7 @@ import gc
 import os
 import glob
 import pickle
+import threading
 
 import torch.serialization
 from flask import jsonify, Flask
@@ -11,8 +12,9 @@ from time import time
 
 from lr_models import *
 
-active: dict[str, dict[str, AbstractLogisticRegression]] = dict()
+active: dict[str, dict[str, EncryptedLogisticRegression]] = dict()
 models: dict[str, dict[str, set[str]]] = dict()
+lock = threading.Lock()
 
 application = Flask(__name__)
 STORAGE_URL = "Server\\clients"
@@ -23,28 +25,37 @@ pattern = os.path.join(STORAGE_URL, '*.bin')
 
 def initialize():
     print("Server initialization started")
-    for filepath in glob.glob(pattern):
-        basename = os.path.basename(filepath)
-        c_id, _ = os.path.splitext(basename)
-        models[c_id] = dict()
-        models[c_id][PLAIN] = set()
-        models[c_id][ENCRYPTED] = set()
-        active[c_id] = dict()
-        folder_pattern = os.path.join(STORAGE_URL, c_id, PLAIN, '*.bin')
-        for model_file in glob.glob(folder_pattern):
-            model_name, _ = os.path.splitext(os.path.basename(model_file))
-            models[c_id][PLAIN].add(model_name)
-        folder_pattern = os.path.join(STORAGE_URL, c_id, ENCRYPTED, '*.bin')
-        for model_file in glob.glob(folder_pattern):
-            model_name, _ = os.path.splitext(os.path.basename(model_file))
-            models[c_id][ENCRYPTED].add(model_name)
-        print("Server initialization completed")
+
+    if not os.path.exists(STORAGE_URL):
+        os.makedirs(STORAGE_URL)
+        print(f"Created directory: {STORAGE_URL}")
+
+    for client_folder in glob.glob(os.path.join(STORAGE_URL, '*')):
+        if os.path.isdir(client_folder):
+            c_id = os.path.basename(client_folder)
+            models[c_id] = dict()
+            models[c_id][PLAIN] = set()
+            models[c_id][ENCRYPTED] = set()
+            active[c_id] = dict()
+
+            plain_folder_pattern = os.path.join(client_folder, PLAIN, '*.bin')
+            for model_file in glob.glob(plain_folder_pattern):
+                model_name, _ = os.path.splitext(os.path.basename(model_file))
+                models[c_id][PLAIN].add(model_name)
+
+            encrypted_folder_pattern = os.path.join(client_folder, ENCRYPTED, '*.bin')
+            for model_file in glob.glob(encrypted_folder_pattern):
+                model_name, _ = os.path.splitext(os.path.basename(model_file))
+                models[c_id][ENCRYPTED].add(model_name)
+
+            client_bin_path = os.path.join(client_folder, 'client.bin')
+            if not os.path.isfile(client_bin_path):
+                raise RuntimeWarning(f"{client_bin_path} file not found!")
+
+    print("Server initialization completed")
 
 
-torch.serialization.add_safe_globals([initialize])
-
-
-def model_train_process_response(completed, weight, bias, model=None):
+def model_train_process_response(completed, weight, bias, model=None, single=False):
     if not completed and (weight is None or bias is None):
         json_response = {
             "error": "internal server error"
@@ -54,13 +65,14 @@ def model_train_process_response(completed, weight, bias, model=None):
     json_response = {
         "bias": bias.serialize().decode("iso-8859-1"),
         "weight": weight.serialize().decode("iso-8859-1"),
-        "message": "accepted"
+        "message": "accepted",
+        "single": single and completed
     }
 
     if completed:
         json_response["model"] = model
 
-    return jsonify(json_response), 200 if completed else 202
+    return jsonify(json_response), 200 if completed and not single else 202
 
 
 @application.route("/", methods=["GET"])
@@ -72,8 +84,9 @@ def index():
 def add_client(client_id):
     if client_id is None:
         return jsonify({"error": "Client ID is missing"}), 400
-    if client_id in models:
-        return jsonify({"error": "Client ID already exists"}), 409
+    with lock:
+        if client_id in models:
+            return jsonify({"error": "Client ID already exists"}), 409
     try:
         ts.context_from(request.data)
     except Exception as e:
@@ -84,7 +97,7 @@ def add_client(client_id):
     active[client_id] = dict()
     os.makedirs(f"{STORAGE_URL}/{client_id}/{PLAIN}")
     os.makedirs(f"{STORAGE_URL}/{client_id}/{ENCRYPTED}")
-    with open(f'{STORAGE_URL}/{client_id}.bin', 'wb') as file:
+    with open(f'{STORAGE_URL}/{client_id}/{client_id}.bin', 'wb') as file:
         pickle.dump(request.data, file)
     return jsonify({"message": "Client registered successfully"}), 201
 
@@ -92,12 +105,20 @@ def add_client(client_id):
 @application.route("/train_encrypted/<client_id>/<model_id>", methods=["POST"])
 # @profile()
 def train_encrypted(client_id, model_id):
+    double = request.json["double"]
     if client_id is None or model_id is None:
         return jsonify({"error": "Send all required data: client ID, model ID"}), 400
     if client_id not in models:
         return jsonify({"error": "Client doesn't exist, please register"}), 404
-    if model_id in models[client_id][PLAIN] or model_id in models[client_id][ENCRYPTED]:
-        return jsonify({"error": "Model already exists"}), 409
+
+    with lock:
+        if model_id in models[client_id][PLAIN] or model_id in models[client_id][ENCRYPTED]:
+            if double and active[client_id][model_id].current_iteration == 0:
+                pass
+            else:
+                return jsonify({"error": "Model already exists"}), 409
+        if not double:
+            models[client_id][ENCRYPTED].add(model_id)
 
     print("Reading received data")
     start_time = time()
@@ -107,7 +128,6 @@ def train_encrypted(client_id, model_id):
     print("Y data read")
     num_features = request.json["num_features"]
     iterations = request.json["iterations"]
-    double = request.json["double"]
     end_time = time()
     print(f"Data loaded in {end_time - start_time} seconds")
 
@@ -115,7 +135,7 @@ def train_encrypted(client_id, model_id):
         return jsonify(
             {"error": "Send all required json data: iterations, num_features, enc_x_train, enc_y_train"}), 400
 
-    with open(f"{STORAGE_URL}/{client_id}.bin", 'rb') as ctx_file:
+    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
         ctx_data = pickle.load(ctx_file)
         context = ts.context_from(ctx_data)
         del ctx_data
@@ -125,26 +145,22 @@ def train_encrypted(client_id, model_id):
     enc_x_train = [ts.ckks_tensor_from(context, e.encode("iso-8859-1")) for e in enc_x_train]
     enc_y_train = [ts.ckks_tensor_from(context, e.encode("iso-8859-1")) for e in enc_y_train]
     print("Raw data converted to CKKS tensors")
+
     if double:
         model = active[client_id][model_id]
         model.set(enc_x_train, enc_y_train)
     else:
         model = EncryptedLogisticRegression(context, enc_x_train, enc_y_train, num_features, iterations)
         active[client_id][model_id] = model
-        models[client_id][ENCRYPTED].add(model_id)
 
     completed, weight, bias = model.train()
 
     del request.json["x_train"]
     del request.json["y_train"]
 
-    if completed:
-        with open(f'{STORAGE_URL}/{client_id}/{ENCRYPTED}/{model_id}.bin', 'wb') as file:
-            pickle.dump((model.weight.serialize(), model.bias.serialize()), file)
-
     gc.collect()
 
-    return model_train_process_response(completed, weight, bias, model_id)
+    return model_train_process_response(completed, weight, bias, model_id, True)
 
 
 @application.route("/train_encrypted_continue/<client_id>/<model_id>", methods=["POST"])
@@ -160,7 +176,7 @@ def train_encrypted_continue(client_id, model_id):
     if weight is None or bias is None or finalization is None:
         return jsonify({"error": "Send all required json data: weight, bias, completed"}), 400
 
-    with open(f"{STORAGE_URL}/{client_id}.bin", 'rb') as ctx_file:
+    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
         ctx_data = pickle.load(ctx_file)
         context = ts.context_from(ctx_data)
         del ctx_data
@@ -190,36 +206,40 @@ def train_plain(client_id, model_id):
         return jsonify({"error": "Send all required data: client ID, model ID"}), 400
     if client_id not in models:
         return jsonify({"error": "Client doesn't exist, please register"}), 404
-    if model_id in models[client_id][PLAIN] or model_id in models[client_id][ENCRYPTED]:
-        return jsonify({"error": "Model already exists"}), 409
 
-    x_train = torch.tensor(request.json["x_train"], dtype=torch.float)
-    y_train = torch.tensor(request.json["y_train"], dtype=torch.float)
+    double = request.json["double"]
+
+    with lock:
+        if model_id in models[client_id][PLAIN] or model_id in models[client_id][ENCRYPTED]:
+            return jsonify({"error": "Model already exists"}), 409
+        models[client_id][PLAIN].add(model_id)
+        if double:
+            enc_index = model_id.find(f"_{PLAIN}")
+            model_id_enc = model_id[:enc_index]
+            models[client_id][ENCRYPTED].add(model_id_enc)
+
+    x_train = torch.tensor(request.json["x_train"], dtype=torch.float64)
+    y_train = torch.tensor(request.json["y_train"], dtype=torch.float64)
     num_features = request.json["num_features"]
     iterations = request.json["iterations"]
-    double = request.json["double"]
 
     if x_train is None or y_train is None or num_features is None or iterations is None:
         return jsonify(
             {"error": "Send all required json data: iterations, num_features, enc_x_train, enc_y_train"}), 400
 
-    with open(f"{STORAGE_URL}/{client_id}.bin", 'rb') as ctx_file:
+    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
         ctx_data = pickle.load(ctx_file)
         context = ts.context_from(ctx_data)
         del ctx_data
         gc.collect()
 
     model = PlainLogisticRegression(context, x_train, y_train, num_features, iterations)
-    models[client_id][PLAIN].add(model_id)
 
     if double:
+        w, b = model.weight.clone(), model.bias.clone()
         model_enc = EncryptedLogisticRegression(context, num_features=num_features,
-                                                iterations=iterations, bias=model.bias, weight=model.weight,
-                                                double=True)
-        enc_index = model_id.find(f"_{PLAIN}")
-        model_id_enc = model_id[:enc_index]
+                                                iterations=iterations, bias=b, weight=w)
         active[client_id][model_id_enc] = model_enc
-        models[client_id][ENCRYPTED].add(model_id_enc)
 
     model.train()
 
@@ -244,7 +264,7 @@ def eval_encrypted(client_id, model_id):
         return jsonify(
             {"error": "Send all required json data: x_eval"}), 400
 
-    with open(f"{STORAGE_URL}/{client_id}.bin", 'rb') as ctx_file:
+    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
         ctx_data = pickle.load(ctx_file)
         context = ts.context_from(ctx_data)
         del ctx_data
@@ -281,10 +301,10 @@ def eval_plain(client_id, model_id):
     if x_eval is None:
         return jsonify(
             {"error": "Send all required json data: x_eval"}), 400
-    x_eval = torch.tensor(x_eval, dtype=torch.float)
+    x_eval = torch.tensor(x_eval, dtype=torch.float64)
 
     folder = ENCRYPTED if model_id in models[client_id][ENCRYPTED] else PLAIN
-    with open(f"{STORAGE_URL}/{client_id}.bin", 'rb') as ctx_file:
+    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
         ctx_data = pickle.load(ctx_file)
         context = ts.context_from(ctx_data)
         del ctx_data
@@ -315,18 +335,6 @@ def eval_plain(client_id, model_id):
     return jsonify(json_response), 200
 
 
-@application.route("/get_num_features/<client_id>/<model_id>", methods=["GET"])
-def get_num_features(client_id, model_id):
-    if client_id is None or model_id is None:
-        return jsonify({"error": "Send all required data: client ID, model ID"}), 400
-    if client_id not in models:
-        return jsonify({"error": "Client doesn't exist, please register"}), 404
-    if model_id not in models[client_id][PLAIN] and model_id not in models[client_id][ENCRYPTED]:
-        return jsonify({"error": "Model doesn't exists"}), 404
-    num_features = 0  # TODO: figure this out
-    return jsonify({"num_features": num_features}), 200
-
-
 @application.route("/delete_model/<client_id>/<model_id>", methods=["DELETE"])
 def delete_model(client_id, model_id):
     if client_id is None or model_id is None:
@@ -354,5 +362,6 @@ def delete_model(client_id, model_id):
 
 
 if __name__ == "__main__":
+    torch.serialization.add_safe_globals([initialize])
     initialize()
-    application.run(debug=False)
+    application.run(debug=True)

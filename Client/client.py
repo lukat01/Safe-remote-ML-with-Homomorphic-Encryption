@@ -3,6 +3,26 @@ from homomorphic_lr import *
 from preprocessing import preprocessing_data, get_model_data
 
 
+def print_diffs(tensors, labels):
+    if len(tensors) < 2:
+        print("Not enough tensors to compare.")
+        return
+
+    tensor_lists = [tensor.tolist() for tensor in tensors]
+    tensor_lengths = [len(tensor_list) for tensor_list in tensor_lists]
+    if not all(length == tensor_lengths[0] for length in tensor_lengths):
+        print("All tensors must have the same length.")
+        return
+
+    for index in range(len(tensor_lists[0])):
+        predictions = [tensor_list[index] for tensor_list in tensor_lists]
+        diffs = [
+            f"diff({labels[0]}, {labels[i]}): {abs(predictions[0][0] - predictions[i][0])}"
+            for i in range(1, len(predictions))
+        ]
+        print(', '.join(f"{label}: {predictions[i][0]}" for i, label in enumerate(labels)) + ', ' + ', '.join(diffs))
+
+
 def main(args):
     client_id = args.client_id
     model_id = args.model_id
@@ -17,8 +37,9 @@ def main(args):
 
     if "info" in operations:
         _, _, stored_columns, stored_label = get_model_data(model_id, client_id)
-        print(stored_columns)
-        print(stored_label)
+        print(f"Columns: {stored_columns}")
+        print(f"Number of features: {len(stored_columns)}")
+        print(f"Label: {stored_label}")
         return
 
     if "del" in operations:
@@ -78,7 +99,8 @@ def main(args):
                 data_to_send["y_train"],
                 data_to_send["num_features"],
                 num_iterations,
-                enc_train
+                enc_train,
+                double
             )
 
         predictions = testing(
@@ -92,26 +114,38 @@ def main(args):
             accuracy = calculate_accuracy(data_to_send["y_test"], predictions)
             print(f"Accuracy for {'encrypted' if enc_train else 'plain'} training and "
                   f"{'encrypted' if enc_test else 'plain'} evaluation: {accuracy * 100}%\n")
-        else:
-            return predictions
+        return predictions
 
+    labels = []
+    tensors = []
     if "pp" in operations:
         # Plain training and plain evaluation
-        run_training_and_testing(train_model=True, enc_train=False, enc_test=False)
+        pp = run_training_and_testing(train_model=True, enc_train=False, enc_test=False)
+        labels.append("pp")
+        tensors.append(pp)
 
     if "pe" in operations:
         # Plain training and encrypted evaluation
-        run_training_and_testing(train_model=False if 'pp' in operations else True,
-                                 enc_train=False, enc_test=True)
+        pe = run_training_and_testing(train_model=False if 'pp' in operations else True,
+                                      enc_train=False, enc_test=True)
+        labels.append("pe")
+        tensors.append(pe)
 
     if "ee" in operations:
         # Encrypted training and encrypted evaluation
-        run_training_and_testing(train_model=True, enc_train=True, enc_test=True)
+        ee = run_training_and_testing(train_model=True, enc_train=True, enc_test=True)
+        labels.append("ee")
+        tensors.append(ee)
 
     if "ep" in operations:
         # Encrypted training and plain evaluation
-        run_training_and_testing(train_model=False if 'ee' in operations else True,
-                                 enc_train=True, enc_test=False)
+        ep = run_training_and_testing(train_model=False if 'ee' in operations else True,
+                                      enc_train=True, enc_test=False)
+        labels.append("ep")
+        tensors.append(ep)
+
+    if data_to_send["x_test"].shape[0] <= 50 and len(tensors) >= 2:
+        print_diffs(tensors, labels)
 
     if "p" in operations:
         # Plain evaluation
@@ -164,5 +198,8 @@ if __name__ == "__main__":
         arguments.file = "data.csv"
         arguments.label = "TenYearCHD"
         arguments.columns_remove = ["education", "currentSmoker", "BPMeds", "diabetes", "diaBP", "BMI"]
+
+    if arguments.num_iterations <= 0:
+        parser.error("Number of iterations must be positive integer")
 
     main(arguments)

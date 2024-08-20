@@ -9,6 +9,7 @@ from time import time
 import requests
 
 url = "http://127.0.0.1:5000"
+CLIENTS_STORAGE = "Client/clients"
 
 
 class Operation(Enum):
@@ -17,10 +18,10 @@ class Operation(Enum):
 
 
 def create_context():
-    poly_mod_degree = 2 ** 13  # 2 ** 13
-    coefficient_mod_bit_sizes = [60, 40, 40, 60]  # [40, 21, 21, 21, 21, 21, 21, 40]
+    poly_mod_degree = 2 ** 14  # 2 ** 13
+    coefficient_mod_bit_sizes = [60, 40, 40, 40, 40, 40, 40, 60]  # [40, 21, 21, 21, 21, 21, 21, 40]
     ctx = ts.context(ts.SCHEME_TYPE.CKKS, poly_mod_degree, -1, coefficient_mod_bit_sizes)
-    ctx.global_scale = 2 ** 40  # 21
+    ctx.global_scale = 2 ** 40  # 2 ** 21
     ctx.generate_galois_keys()
     ctx.generate_relin_keys()
     ctx.auto_relin = True
@@ -30,28 +31,35 @@ def create_context():
 
 
 def registration(client):
+
+    if not os.path.exists(CLIENTS_STORAGE):
+        os.makedirs(CLIENTS_STORAGE)
+
     print("Creating and serializing context")
     context = create_context()
     serialized = context.serialize()
     client_serialized = context.serialize(save_secret_key=True)
-    os.makedirs(f"Client/clients/{client}")
-    os.makedirs(f"Client/clients/{client}/models")
-    with open(f'Client/clients/{client}/{client}.bin', 'wb') as file:
+    os.makedirs(f"{CLIENTS_STORAGE}/{client}")
+    os.makedirs(f"{CLIENTS_STORAGE}/{client}/models")
+    with open(f'{CLIENTS_STORAGE}/{client}/{client}.bin', 'wb') as file:
         pickle.dump(client_serialized.decode("iso-8859-1"), file)
     print("Context created")
 
     print("Sending registration request")
-    response = requests.post(url=f"{url}/register/{client}", data=serialized)
-    print(f"Registration: {response.status_code}\n")
-    if response.status_code != 201:
-        response_dict = json.loads(response.content)
-        raise RuntimeError(f"Error while creating new context: {response_dict['error']}")
+    try:
+        response = requests.post(url=f"{url}/register/{client}", data=serialized)
+        print(f"Registration: {response.status_code}\n")
+        if response.status_code != 201:
+            response_dict = json.loads(response.content)
+            raise RuntimeError(f"Error while creating new context: {response_dict['error']}")
+    except Exception as e:
+        print(f"Error while registering: {str(e)}")
     return context
 
 
 def get_context(client):
     print("Loading context")
-    with open(f'Client/clients/{client}/{client}.bin', 'rb') as file:
+    with open(f'{CLIENTS_STORAGE}/{client}/{client}.bin', 'rb') as file:
         data = pickle.load(file)
         context = ts.context_from(data.encode("iso-8859-1"))
         print("Context loaded\n")
@@ -95,21 +103,24 @@ def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # 
     finalization = False
     while (op_response.status_code == 202 or finalization) and operation == Operation.TRAIN and encrypted:
         response_dict = json.loads(op_response.content.decode("iso-8859-1"))
-        bias = ts.ckks_tensor_from(ctx, response_dict["bias"].encode("iso-8859-1"))
-        bias = bias.decrypt()
-        bias = ts.ckks_tensor(ctx, bias)
+        single = response_dict["single"]
         weight = ts.ckks_tensor_from(ctx, response_dict["weight"].encode("iso-8859-1"))
         weight = weight.decrypt()
         weight = ts.ckks_tensor(ctx, weight)
+        bias = ts.ckks_tensor_from(ctx, response_dict["bias"].encode("iso-8859-1"))
+        bias = bias.decrypt()
+        bias = ts.ckks_tensor(ctx, bias)
         json_request = {
             "bias": bias.serialize().decode("iso-8859-1"),
             "weight": weight.serialize().decode("iso-8859-1"),
-            "finalization": finalization
+            "finalization": finalization or single
         }
         op_response = requests.post(
             url=f"{url}/{operation.name.lower()}_encrypted_continue/{client}/{model}",
             json=json_request
         )
+        if op_response.status_code == 200 and single:
+            break
         if op_response.status_code == 200 and not finalization:
             finalization = True
         elif op_response.status_code == 200 and finalization:
@@ -126,7 +137,7 @@ def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # 
         predictions_encrypted = [ts.ckks_tensor_from(ctx, p.encode("iso-8859-1"))
                                  for p in response_dict["predictions"]]
         predictions_decrypted = [p.decrypt().tolist() for p in predictions_encrypted]
-        return torch.tensor(predictions_decrypted, dtype=torch.float)
+        return torch.tensor(predictions_decrypted, dtype=torch.float64)
     else:
         response_dict = json.loads(op_response.content)
         predictions = response_dict["predictions"]
@@ -136,7 +147,7 @@ def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # 
             predictions = [p.decrypt() for p in predictions]
         else:
             predictions = [[p] for p in predictions]
-        return torch.tensor(predictions, dtype=torch.float)
+        return torch.tensor(predictions, dtype=torch.float64)
 
 
 def training(client, model, ctx, x_data, y_data, num_features, iterations, encrypted=True, double=False):
@@ -155,16 +166,6 @@ def predict_single_entry(client, model, ctx, x_data, encrypted=True):
 def calculate_accuracy(real_values, predicted_values):
     correct = torch.abs(real_values - predicted_values) < 0.5
     return correct.float().mean()
-
-
-def get_num_features(client, model):
-    op_response = requests.post(
-        url=f"{url}/get_num_features/{client}/{model}",
-    )
-    response_dict = json.loads(op_response.content)
-    if op_response.status_code != 200:
-        raise RuntimeError(f"Error while creating new context: {response_dict['error']}")
-    return response_dict["num_features"]
 
 
 def delete_model(client, model):

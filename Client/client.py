@@ -21,6 +21,11 @@ def main(args):
         print(stored_label)
         return
 
+    if "del" in operations:
+        message = delete_model(client_id, model_id)
+        print(message)
+        return
+
     if "all" in operations:
         operations = ["reg", "pp", "pe", "ee"]
 
@@ -138,7 +143,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_iterations", type=int, default=5,
                         help="Number of iterations for training")
     parser.add_argument("--operations", type=str, nargs="+",
-                        choices=["reg", "pp", "pe", "ee", "ep", "all", "e", "p", "info"], default=["all"],
+                        choices=["reg", "pp", "pe", "ee", "ep", "all", "e", "p", "info", "del"], default=["all"],
                         help="Operation to run")
     parser.add_argument("--vector", type=float, nargs="+", default=None,
                         help="Vector for single prediction")

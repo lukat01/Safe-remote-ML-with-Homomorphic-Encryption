@@ -14,7 +14,7 @@ def preprocessing_data(file=None, label=None, columns_remove=None, ratio=0.3, ro
         stored_mean, stored_std, stored_label, stored_columns = get_model_data(model_id, client_id)
         df = pd.DataFrame([vector], columns=stored_columns)
         df = (df - stored_mean) / stored_std
-        df = torch.tensor(df.values, dtype=torch.float64)
+        df = torch.tensor(df.values, dtype=torch.float)
         return df
 
     data = pd.read_csv(file)
@@ -24,7 +24,7 @@ def preprocessing_data(file=None, label=None, columns_remove=None, ratio=0.3, ro
         stored_mean, stored_std, _, _ = get_model_data(model_id, client_id)
         og_data = data.values
         data = (data - stored_mean) / stored_std
-        x = torch.tensor(data.values, dtype=torch.float64)
+        x = torch.tensor(data.values, dtype=torch.float)
         return {"x_test": x, "og_x_test": og_data}
 
     data = data.drop(columns=columns_remove)
@@ -38,12 +38,12 @@ def preprocessing_data(file=None, label=None, columns_remove=None, ratio=0.3, ro
             min_samples = grouped.size().min()
             data = grouped.apply(lambda a: a.sample(min_samples, random_state=73)).reset_index(drop=True)
 
-    y = torch.tensor(data[label].values, dtype=torch.float64).unsqueeze(1)
+    y = torch.tensor(data[label].values, dtype=torch.float).unsqueeze(1)
     data = data.drop(columns=[label])
     mean = data.mean()
     std = data.std()
     data = (data - data.mean()) / data.std()
-    x = torch.tensor(data.values, dtype=torch.float64)
+    x = torch.tensor(data.values, dtype=torch.float)
 
     data_for_file = pd.DataFrame({
         "mean": mean,

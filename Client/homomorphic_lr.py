@@ -17,10 +17,10 @@ class Operation(Enum):
 
 
 def create_context():
-    poly_mod_degree = 2 ** 13
-    coefficient_mod_bit_sizes = [40, 21, 21, 21, 21, 21, 21, 40]
+    poly_mod_degree = 2 ** 13  # 2 ** 13
+    coefficient_mod_bit_sizes = [60, 40, 40, 60]  # [40, 21, 21, 21, 21, 21, 21, 40]
     ctx = ts.context(ts.SCHEME_TYPE.CKKS, poly_mod_degree, -1, coefficient_mod_bit_sizes)
-    ctx.global_scale = 2 ** 21
+    ctx.global_scale = 2 ** 40  # 21
     ctx.generate_galois_keys()
     ctx.generate_relin_keys()
     ctx.auto_relin = True
@@ -126,7 +126,7 @@ def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # 
         predictions_encrypted = [ts.ckks_tensor_from(ctx, p.encode("iso-8859-1"))
                                  for p in response_dict["predictions"]]
         predictions_decrypted = [p.decrypt().tolist() for p in predictions_encrypted]
-        return torch.tensor(predictions_decrypted, dtype=torch.float64)
+        return torch.tensor(predictions_decrypted, dtype=torch.float)
     else:
         response_dict = json.loads(op_response.content)
         predictions = response_dict["predictions"]
@@ -136,7 +136,7 @@ def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # 
             predictions = [p.decrypt() for p in predictions]
         else:
             predictions = [[p] for p in predictions]
-        return torch.tensor(predictions, dtype=torch.float64)
+        return torch.tensor(predictions, dtype=torch.float)
 
 
 def training(client, model, ctx, x_data, y_data, num_features, iterations, encrypted=True, double=False):
@@ -165,3 +165,13 @@ def get_num_features(client, model):
     if op_response.status_code != 200:
         raise RuntimeError(f"Error while creating new context: {response_dict['error']}")
     return response_dict["num_features"]
+
+
+def delete_model(client, model):
+    op_response = requests.delete(
+        url=f"{url}/delete_model/{client}/{model}",
+    )
+    response_dict = json.loads(op_response.content)
+    if op_response.status_code != 200:
+        raise RuntimeError(f"Error while creating new context: {response_dict['error']}")
+    return response_dict["message"]

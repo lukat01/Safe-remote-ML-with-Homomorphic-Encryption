@@ -3,7 +3,9 @@ from abc import ABC, abstractmethod
 import tenseal as ts
 import torch
 
-coefficients = [0.5, 0.197, 0, -0.004]
+# coefficients = [0.5, 0.197, 0, -0.004]
+coefficients = [0.5, 0.197]
+
 fixed_weight = [0.167891725897789, 0.3086147904396057, 0.24430279433727264,
                 0.16990801692008972, 0.16139128804206848, 0.14825797080993652,
                 0.3167053461074829, 0.05549086257815361, 0.12054791301488876]
@@ -20,10 +22,10 @@ class AbstractLogisticRegression(ABC):
         self.iterations = iterations
         if num_features is not None:
             lr = torch.nn.Linear(self.num_features, 1)
-            self.weight = torch.tensor(lr.weight.data.tolist()[0], dtype=torch.float64)
-            self.bias = torch.tensor(lr.bias.data.tolist(), dtype=torch.float64)
-            # self.weight = torch.tensor(fixed_weight, dtype=torch.float64)
-            # self.bias = torch.tensor(fixed_bias, dtype=torch.float64)
+            self.weight = torch.tensor(lr.weight.data.tolist()[0], dtype=torch.float)
+            self.bias = torch.tensor(lr.bias.data.tolist(), dtype=torch.float)
+            # self.weight = torch.tensor(fixed_weight, dtype=torch.float)
+            # self.bias = torch.tensor(fixed_bias, dtype=torch.float)
         else:
             self.weight = None
             self.bias = None
@@ -44,8 +46,8 @@ class AbstractLogisticRegression(ABC):
     def update_parameters(self):
         if self._count == 0:
             raise RuntimeError("You should at least run one forward iteration")
-        self.weight -= self._delta_w * (1 / self._count) + self.weight * 0.05
         self.bias -= self._delta_b * (1 / self._count)
+        self.weight -= self._delta_w * (1 / self._count) + self.weight * 0.05
         self._delta_w = 0
         self._delta_b = 0
         self._count = 0
@@ -107,8 +109,8 @@ class PlainLogisticRegression(AbstractLogisticRegression):
         if isinstance(x, ts.CKKSTensor):
             out = AbstractLogisticRegression.sigmoid(x)
         else:
-            coefficients_tensor = torch.tensor(coefficients, dtype=torch.float64)
-            powers = torch.arange(len(coefficients_tensor), dtype=torch.float64).unsqueeze(0)
+            coefficients_tensor = torch.tensor(coefficients, dtype=torch.float)
+            powers = torch.arange(len(coefficients_tensor), dtype=torch.float).unsqueeze(0)
             x_powers = x ** powers
             out = (coefficients_tensor.unsqueeze(0) * x_powers).sum(dim=-1)
         return out

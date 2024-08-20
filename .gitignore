@@ -1,5 +1,6 @@
 /_notes.txt
 /requirements.txt
 /Client/clients/
-/Client/data/
 /Client/testing.py
+/Server/clients/
+/Client/data/

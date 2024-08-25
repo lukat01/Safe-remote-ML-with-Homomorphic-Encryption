@@ -1,0 +1,8 @@
+tenseal
+torch
+flask
+scikit-learn
+requests
+pandas
+memory-profiler
+numpy<2

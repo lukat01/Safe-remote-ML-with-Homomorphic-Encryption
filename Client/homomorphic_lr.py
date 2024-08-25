@@ -11,7 +11,6 @@ import requests
 url = "http://127.0.0.1:5000"
 CLIENTS_STORAGE = "Client/clients"
 default_float = torch.float64
-# it changes the accuracy slightly, but it remains consistent for different modes
 
 
 class Operation(Enum):
@@ -20,10 +19,10 @@ class Operation(Enum):
 
 
 def create_context():
-    poly_mod_degree = 2 ** 14  # 2 ** 13
-    coefficient_mod_bit_sizes = [60, 40, 40, 40, 40, 40, 40, 60]  # [40, 21, 21, 21, 21, 21, 21, 40]
+    poly_mod_degree = 2 ** 14
+    coefficient_mod_bit_sizes = [50, 40, 40, 40, 40, 40, 40, 50]
     ctx = ts.context(ts.SCHEME_TYPE.CKKS, poly_mod_degree, -1, coefficient_mod_bit_sizes)
-    ctx.global_scale = 2 ** 40  # 2 ** 21
+    ctx.global_scale = 2 ** 40
     ctx.generate_galois_keys()
     ctx.generate_relin_keys()
     ctx.auto_relin = True
@@ -33,7 +32,6 @@ def create_context():
 
 
 def registration(client):
-
     if not os.path.exists(CLIENTS_STORAGE):
         os.makedirs(CLIENTS_STORAGE)
 
@@ -70,7 +68,6 @@ def get_context(client):
 
 def send_data(client, model, operation: Operation, ctx, x_data, y_data=None,  # both x and y are list of list
               num_features=None, iterations=None, encrypted=True, double=False):
-
     operation_str = operation.value
     if encrypted:
         print(f"Encrypting data for {operation_str}")

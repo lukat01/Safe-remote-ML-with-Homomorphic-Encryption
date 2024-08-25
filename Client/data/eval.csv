@@ -1,0 +1,5 @@
+male,age,cigsPerDay,prevalentStroke,prevalentHyp,totChol,sysBP,heartRate,glucose
+1,39,0,0,0,195,106,80,77
+0,46,0,0,0,250,121,95,76
+1,48,20,0,0,245,127.5,75,70
+0,61,30,0,1,225,150,65,103

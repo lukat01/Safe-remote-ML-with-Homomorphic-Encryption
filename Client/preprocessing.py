@@ -20,6 +20,7 @@ def preprocessing_data(file=None, label=None, columns_remove=None, ratio=0.3, ro
 
     data = pd.read_csv(file)
     data = data.dropna()
+    data = data.drop(columns=columns_remove)
 
     if for_prediction:
         stored_mean, stored_std, _, _ = get_model_data(model_id, client_id)
@@ -28,7 +29,6 @@ def preprocessing_data(file=None, label=None, columns_remove=None, ratio=0.3, ro
         x = torch.tensor(data.values, dtype=default_float)
         return {"x_test": x, "og_x_test": og_data}
 
-    data = data.drop(columns=columns_remove)
     grouped = data.groupby(label)
 
     if not for_prediction:

@@ -8,7 +8,7 @@ import torch.serialization
 from flask import jsonify, Flask
 from flask import request
 from time import time
-# from memory_profiler import profile
+from memory_profiler import profile
 
 from lr_models import *
 
@@ -48,10 +48,6 @@ def initialize():
                 model_name, _ = os.path.splitext(os.path.basename(model_file))
                 models[c_id][ENCRYPTED].add(model_name)
 
-            client_bin_path = os.path.join(client_folder, 'client.bin')
-            if not os.path.isfile(client_bin_path):
-                raise RuntimeWarning(f"{client_bin_path} file not found!")
-
     print("Server initialization completed")
 
 
@@ -90,6 +86,7 @@ def add_client(client_id):
     try:
         ts.context_from(request.data)
     except Exception as e:
+        print(str(e))
         return jsonify({"error": f"Failed to create context: {str(e)}"}), 400
     models[client_id] = dict()
     models[client_id][PLAIN] = set()
@@ -99,11 +96,12 @@ def add_client(client_id):
     os.makedirs(f"{STORAGE_URL}/{client_id}/{ENCRYPTED}")
     with open(f'{STORAGE_URL}/{client_id}/{client_id}.bin', 'wb') as file:
         pickle.dump(request.data, file)
+
     return jsonify({"message": "Client registered successfully"}), 201
 
 
 @application.route("/train_encrypted/<client_id>/<model_id>", methods=["POST"])
-# @profile()
+@profile
 def train_encrypted(client_id, model_id):
     double = request.json["double"]
     if client_id is None or model_id is None:
@@ -161,6 +159,7 @@ def train_encrypted(client_id, model_id):
 
         return model_train_process_response(completed, weight, bias, model_id, True)
     except Exception as e:
+        print(str(e))
         if client_id in models and ENCRYPTED in models[client_id] and model_id in models[client_id][ENCRYPTED]:
             models[client_id][ENCRYPTED].remove(model_id)
         if client_id in active and model_id in active[client_id]:
@@ -170,7 +169,7 @@ def train_encrypted(client_id, model_id):
 
 
 @application.route("/train_encrypted_continue/<client_id>/<model_id>", methods=["POST"])
-# @profile
+@profile
 def train_encrypted_continue(client_id, model_id):
     if client_id is None or model_id is None:
         return jsonify({"error": "Send all required data: client ID, model ID"}), 400
@@ -206,6 +205,7 @@ def train_encrypted_continue(client_id, model_id):
 
         return jsonify({"message": "Training fully completed", "model": model_id}), 200
     except Exception as e:
+        print(str(e))
         if client_id in models and ENCRYPTED in models[client_id] and model_id in models[client_id][ENCRYPTED]:
             models[client_id][ENCRYPTED].remove(model_id)
         if client_id in active and model_id in active[client_id]:
@@ -217,6 +217,7 @@ def train_encrypted_continue(client_id, model_id):
 
 
 @application.route("/train_plain/<client_id>/<model_id>", methods=["POST"])
+@profile
 def train_plain(client_id, model_id):
     if client_id is None or model_id is None:
         return jsonify({"error": "Send all required data: client ID, model ID"}), 400
@@ -253,7 +254,8 @@ def train_plain(client_id, model_id):
         model = PlainLogisticRegression(context, x_train, y_train, num_features, iterations)
 
         if double:
-            w, b = model.weight.clone(), model.bias.clone()
+            w, b, lr, rp = (model.weight.clone(), model.bias.clone(), model.learning_rate,
+                            model.regularization_strength)
             model_enc = EncryptedLogisticRegression(context, num_features=num_features,
                                                     iterations=iterations, bias=b, weight=w)
             active[client_id][model_id_enc] = model_enc
@@ -281,7 +283,7 @@ def train_plain(client_id, model_id):
 
 
 @application.route("/eval_encrypted/<client_id>/<model_id>", methods=["POST"])
-# @profile
+@profile
 def eval_encrypted(client_id, model_id):
     if client_id is None or model_id is None:
         return jsonify({"error": "Send all required data: client ID, model ID"}), 400
@@ -321,6 +323,7 @@ def eval_encrypted(client_id, model_id):
 
 
 @application.route("/eval_plain/<client_id>/<model_id>", methods=["POST"])
+@profile
 def eval_plain(client_id, model_id):
     if client_id is None or model_id is None:
         return jsonify({"error": "Send all required data: client ID, model ID"}), 400
@@ -380,6 +383,8 @@ def delete_model(client_id, model_id):
         if os.path.exists(model_path):
             os.remove(model_path)
         models[client_id][ENCRYPTED].remove(model_id)
+
+    if model_id in active[client_id]:
         active[client_id].pop(model_id, None)
 
     if model_id in models[client_id][PLAIN]:
@@ -387,7 +392,6 @@ def delete_model(client_id, model_id):
         if os.path.exists(model_path):
             os.remove(model_path)
         models[client_id][PLAIN].remove(model_id)
-        active[client_id].pop(model_id, None)
 
     return jsonify({"message": "Model deleted successfully"}), 200
 

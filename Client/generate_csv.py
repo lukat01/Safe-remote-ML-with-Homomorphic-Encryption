@@ -20,4 +20,4 @@ def generate_csv(filename, num_rows, num_cols):
         writer.writerows(rows)
 
 
-generate_csv('data/monster.csv', 2000, 500)
+generate_csv('data/1000.csv', 100, 999)

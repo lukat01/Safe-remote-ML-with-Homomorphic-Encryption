@@ -9,7 +9,8 @@ default_float = torch.float
 
 class AbstractLogisticRegression(ABC):
 
-    def __init__(self, context, x_train, y_train, num_features, iterations, weight=None, bias=None,
+    def __init__(self, context=None, x_train=None, y_train=None,
+                 num_features=None, iterations=None, weight=None, bias=None,
                  learning_rate=1, regularization_strength=0.1):
         self.ctx = context
         self.x_train = x_train
@@ -50,8 +51,8 @@ class AbstractLogisticRegression(ABC):
             raise RuntimeError("No data for training is provided")
         self.bias -= self._delta_b * (self.learning_rate / self._count)
         reg_term = self.weight * self.regularization_strength
-        mult = self.learning_rate / self._count
-        self.weight -= (self._delta_w + reg_term) * mult
+        factor = self.learning_rate / self._count
+        self.weight -= (self._delta_w + reg_term) * factor
         self._delta_w = 0
         self._delta_b = 0
 
@@ -72,9 +73,9 @@ class AbstractLogisticRegression(ABC):
 
 class PlainLogisticRegression(AbstractLogisticRegression):
 
-    def __init__(self, context, x_train=None, y_train=None, num_features=None, iterations=None,
+    def __init__(self, x_train=None, y_train=None, num_features=None, iterations=None,
                  weight=None, bias=None, learning_rate=1, regularization_strength=0.1):
-        super().__init__(context, x_train, y_train, num_features, iterations, weight, bias,
+        super().__init__(None, x_train, y_train, num_features, iterations, weight, bias,
                          learning_rate, regularization_strength)
 
     def train(self):

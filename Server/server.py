@@ -245,15 +245,15 @@ def train_plain(client_id, model_id):
             return jsonify(
                 {"error": "Send all required json data: iterations, num_features, enc_x_train, enc_y_train"}), 400
 
-        with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
-            ctx_data = pickle.load(ctx_file)
-            context = ts.context_from(ctx_data)
-            del ctx_data
-            gc.collect()
-
-        model = PlainLogisticRegression(context, x_train, y_train, num_features, iterations)
+        model = PlainLogisticRegression(x_train, y_train, num_features, iterations)
 
         if double:
+            with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
+                ctx_data = pickle.load(ctx_file)
+                context = ts.context_from(ctx_data)
+                del ctx_data
+                gc.collect()
+
             w, b, lr, rp = (model.weight.clone(), model.bias.clone(), model.learning_rate,
                             model.regularization_strength)
             model_enc = EncryptedLogisticRegression(context, num_features=num_features,
@@ -312,7 +312,7 @@ def eval_encrypted(client_id, model_id):
             loaded_bias = ts.ckks_vector_from(context, loaded_bias)
             model = EncryptedLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
         else:
-            model = PlainLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
+            model = PlainLogisticRegression(weight=loaded_weight, bias=loaded_bias)
 
     predictions = model.predict(enc_x_eval)
     json_response = {
@@ -338,13 +338,13 @@ def eval_plain(client_id, model_id):
     x_eval = torch.tensor(x_eval, dtype=default_float)
 
     folder = ENCRYPTED if model_id in models[client_id][ENCRYPTED] else PLAIN
-    with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
-        ctx_data = pickle.load(ctx_file)
-        context = ts.context_from(ctx_data)
-        del ctx_data
-        gc.collect()
 
     if folder == ENCRYPTED:
+        with open(f"{STORAGE_URL}/{client_id}/{client_id}.bin", 'rb') as ctx_file:
+            ctx_data = pickle.load(ctx_file)
+            context = ts.context_from(ctx_data)
+            del ctx_data
+            gc.collect()
         x_eval = [ts.ckks_vector(context, x) for x in x_eval]
 
     with open(f"{STORAGE_URL}/{client_id}/{folder}/{model_id}.bin", 'rb') as model_file:
@@ -354,7 +354,7 @@ def eval_plain(client_id, model_id):
             loaded_bias = ts.ckks_vector_from(context, loaded_bias)
             model = EncryptedLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
         else:
-            model = PlainLogisticRegression(context, weight=loaded_weight, bias=loaded_bias)
+            model = PlainLogisticRegression(weight=loaded_weight, bias=loaded_bias)
 
     predictions = model.predict(x_eval)
     if isinstance(model, EncryptedLogisticRegression):
